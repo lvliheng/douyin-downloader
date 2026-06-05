@@ -78,6 +78,19 @@ class BaseUserModeStrategy(ABC):
             return items
         return [item for item in items if detector(item) in selected]
 
+    def _get_last_video_id(self) -> Optional[str]:
+        raw = self.downloader.config.get("last_video_id")
+        if raw is None:
+            return None
+        last_video_id = str(raw).strip()
+        return last_video_id if last_video_id else None
+
+    def _find_last_video_index(self, items: List[Dict[str, Any]], last_video_id: str) -> int:
+        for index, item in enumerate(items):
+            if str(item.get("aweme_id") or "").strip() == last_video_id:
+                return index
+        return -1
+
     async def _collect_paged_aweme(
         self, sec_uid: str, user_info: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
@@ -96,7 +109,15 @@ class BaseUserModeStrategy(ABC):
 
         number_limit = int(self.downloader.config.get("number", {}).get(self.mode_name, 0) or 0)
         media_filter_enabled = self._media_type_filter_enabled()
-        increase_enabled = bool(
+        last_video_id = self._get_last_video_id()
+
+        anchor_mode = False
+        if last_video_id and self.downloader.database and user_info.get("uid"):
+            count = await self.downloader.database.get_aweme_count_by_author(
+                str(user_info.get("uid"))
+            )
+            anchor_mode = count > 0
+        increase_enabled = False if anchor_mode else bool(
             self.downloader.config.get("increase", {}).get(self.mode_name, False)
         )
         stop_at_downloaded_aweme = (
@@ -105,6 +126,7 @@ class BaseUserModeStrategy(ABC):
         latest_time = None
         if increase_enabled and self.downloader.database and not stop_at_downloaded_aweme:
             latest_time = await self.downloader.database.get_latest_aweme_time(user_info.get("uid"))
+        anchor_found = False
 
         while has_more:
             await self.downloader.rate_limiter.acquire()
@@ -115,7 +137,21 @@ class BaseUserModeStrategy(ABC):
             if not page_items:
                 break
 
-            if stop_at_downloaded_aweme:
+            if anchor_mode and not anchor_found:
+                last_index = self._find_last_video_index(page_items, last_video_id)
+                if last_index != -1:
+                    anchor_found = True
+                    # Keep older items after the anchor.
+                    page_items = page_items[last_index + 1:]
+
+            if not page_items:
+                if anchor_found:
+                    # Anchor found at the head of a page but there are no older items
+                    # on this page. Continue to next page to fetch historical records.
+                    pass
+                else:
+                    break
+            elif stop_at_downloaded_aweme:
                 new_items = []
                 for item in page_items:
                     if await self._is_downloaded_aweme(item):
@@ -132,7 +168,13 @@ class BaseUserModeStrategy(ABC):
             else:
                 aweme_list.extend(page_items)
 
-            if number_limit > 0:
+            # When operating in anchor_mode we must not enforce the page-limit
+            # until we've found the anchor; otherwise we may truncate the
+            # result before reaching the `last_video_id` and thus never return
+            # the historical items after it. Only apply the configured
+            # `number_limit` when not in anchor_mode or after the anchor is
+            # located.
+            if number_limit > 0 and (not anchor_mode or anchor_found):
                 if media_filter_enabled:
                     if len(self._filter_by_media_type(aweme_list)) >= number_limit:
                         break

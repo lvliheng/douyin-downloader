@@ -51,6 +51,166 @@ def test_like_strategy_collects_items_from_api():
     assert [item["aweme_id"] for item in items] == ["111"]
 
 
+def test_strategy_returns_new_items_when_no_local_history():
+    class _API:
+        async def get_user_like(self, _sec_uid, max_cursor=0, count=20):
+            return {
+                "items": [
+                    _make_aweme("new-1"),
+                    _make_aweme("new-2"),
+                    _make_aweme("last-known"),
+                    _make_aweme("old-1"),
+                ],
+                "has_more": False,
+                "max_cursor": 0,
+            }
+
+    class _Downloader:
+        def __init__(self):
+            self.api_client = _API()
+            self.rate_limiter = _NoopRateLimiter()
+            self.config = type(
+                "Cfg",
+                (),
+                {
+                    "get": lambda _self, key, default=None: {
+                        "number": {"like": 0},
+                        "increase": {"like": False},
+                        "last_video_id": "last-known",
+                    }.get(key, default)
+                },
+            )()
+            self.database = None
+            self._filter_by_time = lambda items: items
+            self._limit_count = lambda items, _mode: items
+
+    strategy = LikeUserModeStrategy(_Downloader())
+    items = asyncio.run(strategy.collect_items("sec_uid_x", {"uid": "uid-1"}))
+    assert [item["aweme_id"] for item in items] == ["new-1", "new-2", "last-known", "old-1"]
+
+
+def test_last_video_id_ignored_when_no_local_history():
+    class _API:
+        async def get_user_like(self, _sec_uid, max_cursor=0, count=20):
+            return {
+                "items": [
+                    _make_aweme("new-1"),
+                    _make_aweme("new-2"),
+                    _make_aweme("last-known"),
+                    _make_aweme("old-1"),
+                ],
+                "has_more": False,
+                "max_cursor": 0,
+            }
+
+    class _Downloader:
+        def __init__(self):
+            self.api_client = _API()
+            self.rate_limiter = _NoopRateLimiter()
+            self.config = type(
+                "Cfg",
+                (),
+                {
+                    "get": lambda _self, key, default=None: {
+                        "number": {"like": 0},
+                        "increase": {"like": False},
+                        "last_video_id": "last-known",
+                    }.get(key, default)
+                },
+            )()
+            self.database = None
+            self._filter_by_time = lambda items: items
+            self._limit_count = lambda items, _mode: items
+
+    strategy = LikeUserModeStrategy(_Downloader())
+    items = asyncio.run(strategy.collect_items("sec_uid_x", {"uid": "uid-1"}))
+    assert [item["aweme_id"] for item in items] == ["new-1", "new-2", "last-known", "old-1"]
+
+
+def test_strategy_returns_items_after_last_video_id_when_no_new_data():
+    class _API:
+        async def get_user_like(self, _sec_uid, max_cursor=0, count=20):
+            return {
+                "items": [
+                    _make_aweme("last-known"),
+                    _make_aweme("old-1"),
+                    _make_aweme("old-2"),
+                ],
+                "has_more": False,
+                "max_cursor": 0,
+            }
+
+    class _Database:
+        async def get_aweme_count_by_author(self, _author_id):
+            return 1
+
+    class _Downloader:
+        def __init__(self):
+            self.api_client = _API()
+            self.rate_limiter = _NoopRateLimiter()
+            self.config = type(
+                "Cfg",
+                (),
+                {
+                    "get": lambda _self, key, default=None: {
+                        "number": {"like": 0},
+                        "increase": {"like": False},
+                        "last_video_id": "last-known",
+                    }.get(key, default)
+                },
+            )()
+            self.database = _Database()
+            self._filter_by_time = lambda items: items
+            self._limit_count = lambda items, _mode: items
+
+    strategy = LikeUserModeStrategy(_Downloader())
+    items = asyncio.run(strategy.collect_items("sec_uid_x", {"uid": "uid-1"}))
+    assert [item["aweme_id"] for item in items] == ["old-1", "old-2"]
+
+
+def test_strategy_returns_items_after_last_video_id_when_anchor_is_in_middle():
+    class _API:
+        async def get_user_like(self, _sec_uid, max_cursor=0, count=20):
+            return {
+                "items": [
+                    _make_aweme("new-1"),
+                    _make_aweme("new-2"),
+                    _make_aweme("last-known"),
+                    _make_aweme("old-1"),
+                    _make_aweme("old-2"),
+                ],
+                "has_more": False,
+                "max_cursor": 0,
+            }
+
+    class _Database:
+        async def get_aweme_count_by_author(self, _author_id):
+            return 1
+
+    class _Downloader:
+        def __init__(self):
+            self.api_client = _API()
+            self.rate_limiter = _NoopRateLimiter()
+            self.config = type(
+                "Cfg",
+                (),
+                {
+                    "get": lambda _self, key, default=None: {
+                        "number": {"like": 1},
+                        "increase": {"like": False},
+                        "last_video_id": "last-known",
+                    }.get(key, default)
+                },
+            )()
+            self.database = _Database()
+            self._filter_by_time = lambda items: items
+            self._limit_count = lambda items, _mode: items
+
+    strategy = LikeUserModeStrategy(_Downloader())
+    items = asyncio.run(strategy.collect_items("sec_uid_x", {"uid": "uid-1"}))
+    assert [item["aweme_id"] for item in items] == ["old-1"]
+
+
 def test_like_strategy_increment_stops_at_first_downloaded_aweme():
     class _API:
         def __init__(self):

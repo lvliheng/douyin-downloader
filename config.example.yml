@@ -33,6 +33,8 @@ download_pinned: false
 mode:
   - post
 
+last_video_id: ""
+
 number:
   post: 1
   like: 0

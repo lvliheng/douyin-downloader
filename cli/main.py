@@ -170,6 +170,8 @@ async def main_async(args):
 
     if args.path:
         config.update(path=args.path)
+    if args.last_video_id:
+        config.update(last_video_id=args.last_video_id)
 
     # 独立子命令：热榜 / 搜索 / 服务
     if args.hot_board is not None or args.search:
@@ -369,6 +371,7 @@ def main():
         action="store_true",
         help="以 REST API 服务模式运行（需要安装 fastapi + uvicorn）",
     )
+    parser.add_argument("--last-video-id", help="指定最后已知视频 aweme_id，用于获取新作品或历史作品")
     parser.add_argument("--serve-host", type=str, default="127.0.0.1", help="REST 服务监听地址")
     parser.add_argument("--serve-port", type=int, default=8000, help="REST 服务监听端口")
     try:
