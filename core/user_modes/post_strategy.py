@@ -25,12 +25,15 @@ class PostUserModeStrategy(BaseUserModeStrategy):
 
         number_limit = int(self.downloader.config.get("number", {}).get(self.mode_name, 0) or 0)
         media_filter_enabled = self._media_type_filter_enabled()
-        last_video_id = self._get_last_video_id()
-        anchor_mode = False
-        if last_video_id and self.downloader.database and user_info.get("uid"):
-            count = await self.downloader.database.get_aweme_count_by_author(str(user_info.get("uid")))
-            anchor_mode = count > 0
-        anchor_found = False
+        latest_id = str(self.downloader.config.get("latest_id") or "").strip()
+        last_id = str(self.downloader.config.get("last_id") or "").strip()
+
+        # mode determination (set after first page)
+        new_content_mode = False
+        backfill_mode = False
+        newest_seen_id = ""
+        latest_id_found = False
+        last_id_found = False
 
         self.downloader._progress_update_step("拉取作品列表", "分页抓取中")
 
@@ -40,6 +43,7 @@ class PostUserModeStrategy(BaseUserModeStrategy):
             page_data = await fetcher(sec_uid, request_cursor, 20)
             page = self._normalize_page_data(page_data)
             page_items = self.select_items(page)
+            page_items = self._filter_pinned_items(page_items)
 
             if not page_items:
                 if page.get("status_code") == 0:
@@ -51,24 +55,46 @@ class PostUserModeStrategy(BaseUserModeStrategy):
                     )
                 break
 
-            # Anchor handling: if configured and we haven't found it yet,
-            # check whether this page contains the last_video_id anchor.
-            if anchor_mode and not anchor_found:
-                last_index = self._find_last_video_index(page_items, last_video_id)
-                if last_index != -1:
-                    anchor_found = True
-                    # Keep older items after the anchor.
-                    page_items = page_items[last_index + 1:]
+            # Determine mode on first page
+            if newest_seen_id == "" and page_items:
+                newest_seen_id = str(page_items[0].get("aweme_id") or "").strip()
+                if latest_id:
+                    new_content_mode = (newest_seen_id != latest_id)
+                    backfill_mode = (newest_seen_id == latest_id)
+                else:
+                    new_content_mode = True
+                    backfill_mode = False
 
+            # ── Filter items for current mode ──────────────────────────────
+
+            # New content mode: take items newer than latest_id
+            if new_content_mode and not latest_id_found and latest_id:
+                lidx = self._find_last_video_index(page_items, latest_id)
+                if lidx != -1:
+                    latest_id_found = True
+                    page_items = page_items[:lidx]
+
+            # Backfill mode: take items older than last_id
+            if backfill_mode and not last_id_found and last_id:
+                lidx = self._find_last_video_index(page_items, last_id)
+                if lidx != -1:
+                    last_id_found = True
+                    page_items = page_items[lidx + 1:]
+                else:
+                    page_items = []
+
+            # Decide whether to stop or continue
             if not page_items:
-                if anchor_found:
-                    # Anchor found at the head of a page but there are no older items
-                    # on this page. Continue to next page to fetch historical records.
+                # Continue paginating if boundary not found yet
+                if (new_content_mode and latest_id and not latest_id_found):
+                    pass
+                elif (backfill_mode and last_id and not last_id_found):
+                    pass
+                elif new_content_mode and not latest_id and not aweme_list:
                     pass
                 else:
                     break
 
-            page_items = self._filter_pinned_items(page_items)
             aweme_list.extend(page_items)
 
             self.downloader._progress_update_step("拉取作品列表", f"已抓取 {len(aweme_list)} 条")
@@ -83,16 +109,24 @@ class PostUserModeStrategy(BaseUserModeStrategy):
                 pagination_restricted = True
                 break
 
-            # Only apply the configured `number_limit` once anchor search is
-            # complete (or when anchor mode is not active) to avoid truncating
-            # the result before we locate the `last_video_id`.
-            if number_limit > 0 and (not anchor_mode or anchor_found):
+            # Apply number_limit after we've found the boundary (or if no boundary needed)
+            can_limit = (
+                (new_content_mode and (not latest_id or latest_id_found)) or
+                (backfill_mode and last_id_found)
+            )
+            if number_limit > 0 and can_limit:
                 if media_filter_enabled:
                     if len(self._filter_by_media_type(aweme_list)) >= number_limit:
                         break
                 elif len(aweme_list) >= number_limit:
                     aweme_list = aweme_list[:number_limit]
                     break
+
+            # Stop paginating once boundary is found in any mode
+            if new_content_mode and latest_id_found:
+                break
+            if backfill_mode and last_id_found:
+                break
 
         if pagination_restricted:
             self.downloader._progress_update_step("拉取作品列表", "分页受限，尝试浏览器回补")
@@ -102,4 +136,17 @@ class PostUserModeStrategy(BaseUserModeStrategy):
                     "抖音接口未返回作品列表（可能触发了反爬限制），"
                     "请稍后重试或尝试重新登录抖音刷新 Cookie"
                 )
+
+        # Determine suggested update field/value
+        self._suggested_update_field = ""
+        self._suggested_update_value = ""
+        if aweme_list:
+            first_id = str(aweme_list[0].get("aweme_id") or "").strip()
+            if backfill_mode and last_id_found:
+                self._suggested_update_field = "last_id"
+                self._suggested_update_value = first_id
+            elif new_content_mode:
+                self._suggested_update_field = "latest_id"
+                self._suggested_update_value = first_id
+
         return aweme_list

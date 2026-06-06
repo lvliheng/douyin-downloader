@@ -20,9 +20,9 @@ class VideoDownloader(BaseDownloader):
         self._progress_update_step("下载作品", "单作品资源下载中")
 
         if not await self._should_download(aweme_id):
-            logger.info("Video %s already downloaded, skipping", aweme_id)
-            result.skipped += 1
-            self._progress_advance_item("skipped", str(aweme_id))
+            logger.info("Video %s already downloaded", aweme_id)
+            result.success += 1
+            self._progress_advance_item("success", str(aweme_id))
             return result
 
         await self.rate_limiter.acquire()

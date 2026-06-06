@@ -172,6 +172,10 @@ async def main_async(args):
         config.update(path=args.path)
     if args.last_video_id:
         config.update(last_video_id=args.last_video_id)
+    if args.latest_id:
+        config.update(latest_id=args.latest_id)
+    if args.last_id:
+        config.update(last_id=args.last_id)
 
     # 独立子命令：热榜 / 搜索 / 服务
     if args.hot_board is not None or args.search:
@@ -253,9 +257,23 @@ async def main_async(args):
             total_result.success += r.success
             total_result.failed += r.failed
             total_result.skipped += r.skipped
+            if r.suggested_update_field and not total_result.suggested_update_field:
+                total_result.suggested_update_field = r.suggested_update_field
+                total_result.suggested_update_value = r.suggested_update_value
 
         display.print_success("\n=== Overall Summary ===")
         display.show_result(total_result)
+
+        # Output update suggestion for callers (e.g. szbb-knowledge)
+        if total_result.suggested_update_field and total_result.suggested_update_value:
+            print(
+                json.dumps({
+                    "suggested_update": {
+                        "field": total_result.suggested_update_field,
+                        "value": total_result.suggested_update_value,
+                    }
+                })
+            )
 
         await _dispatch_notifications(config, total_result, len(urls))
     else:
@@ -372,6 +390,8 @@ def main():
         help="以 REST API 服务模式运行（需要安装 fastapi + uvicorn）",
     )
     parser.add_argument("--last-video-id", help="指定最后已知视频 aweme_id，用于获取新作品或历史作品")
+    parser.add_argument("--latest-id", help="指定当前平台最新 aweme_id，用于判断是否有新作品")
+    parser.add_argument("--last-id", help="指定最后处理的作品 aweme_id，用于回填更早数据")
     parser.add_argument("--serve-host", type=str, default="127.0.0.1", help="REST 服务监听地址")
     parser.add_argument("--serve-port", type=int, default=8000, help="REST 服务监听端口")
     try:

@@ -32,12 +32,19 @@ class BaseUserModeStrategy(ABC):
         author_name = user_info.get("nickname", "unknown")
         if seen_aweme_ids is None:
             seen_aweme_ids = set()
-        return await self.downloader._download_mode_items(
+        result = await self.downloader._download_mode_items(
             mode=self.mode_name,
             items=items,
             author_name=author_name,
             seen_aweme_ids=seen_aweme_ids,
         )
+        # Propagate suggested update from strategy (set by collect_items)
+        sf = getattr(self, '_suggested_update_field', '')
+        sv = getattr(self, '_suggested_update_value', '')
+        if sf and sv:
+            result.suggested_update_field = sf
+            result.suggested_update_value = sv
+        return result
 
     async def collect_items(self, sec_uid: str, user_info: Dict[str, Any]) -> List[Dict[str, Any]]:
         return await self._collect_paged_aweme(sec_uid, user_info)

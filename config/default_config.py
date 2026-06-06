@@ -38,6 +38,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "music": False,
     },
     "last_video_id": "",
+    "latest_id": "",
+    "last_id": "",
     "thread": 5,
     "retry_times": 3,
     "rate_limit": 2,
