@@ -154,7 +154,7 @@ class FileManager:
         try:
             async with session.get(
                 url,
-                timeout=aiohttp.ClientTimeout(total=300),
+                timeout=aiohttp.ClientTimeout(total=300, sock_read=60),
                 headers=headers,
                 proxy=proxy or None,
             ) as response:
