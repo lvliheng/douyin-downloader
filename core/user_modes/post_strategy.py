@@ -18,20 +18,19 @@ class PostUserModeStrategy(BaseUserModeStrategy):
             logger.error("API client missing get_user_post")
             return []
 
+        number_limit = int(self.downloader.config.get("number", {}).get(self.mode_name, 0) or 0)
+        latest_video_id = str(self.downloader.config.get("latest_video_id") or "").strip()
+        last_video_id = str(self.downloader.config.get("last_video_id") or "").strip()
+
+        # ── First run (no boundaries) ──
+        if not latest_video_id and not last_video_id:
+            return await self._collect_first_run(sec_uid, user_info, number_limit)
+
+        # ── Boundary-based pagination ──
         aweme_list: List[Dict[str, Any]] = []
         max_cursor = 0
         has_more = True
         pagination_restricted = False
-
-        number_limit = int(self.downloader.config.get("number", {}).get(self.mode_name, 0) or 0)
-        media_filter_enabled = self._media_type_filter_enabled()
-        latest_id = str(self.downloader.config.get("latest_id") or "").strip()
-        last_id = str(self.downloader.config.get("last_id") or "").strip()
-
-        # mode determination (set after first page)
-        new_content_mode = False
-        backfill_mode = False
-        newest_seen_id = ""
         latest_id_found = False
         last_id_found = False
 
@@ -55,48 +54,14 @@ class PostUserModeStrategy(BaseUserModeStrategy):
                     )
                 break
 
-            # Determine mode on first page
-            if newest_seen_id == "" and page_items:
-                newest_seen_id = str(page_items[0].get("aweme_id") or "").strip()
-                if latest_id:
-                    new_content_mode = (newest_seen_id != latest_id)
-                    backfill_mode = (newest_seen_id == latest_id)
-                else:
-                    new_content_mode = True
-                    backfill_mode = False
-
-            # ── Filter items for current mode ──────────────────────────────
-
-            # New content mode: take items newer than latest_id
-            if new_content_mode and not latest_id_found and latest_id:
-                lidx = self._find_last_video_index(page_items, latest_id)
-                if lidx != -1:
+            for item in page_items:
+                item_id = str(item.get("aweme_id") or "").strip()
+                if not latest_id_found and latest_video_id and item_id == latest_video_id:
                     latest_id_found = True
-                    page_items = page_items[:lidx]
-
-            # Backfill mode: take items older than last_id
-            if backfill_mode and not last_id_found and last_id:
-                lidx = self._find_last_video_index(page_items, last_id)
-                if lidx != -1:
+                if not last_id_found and last_video_id and item_id == last_video_id:
                     last_id_found = True
-                    page_items = page_items[lidx + 1:]
-                else:
-                    page_items = []
-
-            # Decide whether to stop or continue
-            if not page_items:
-                # Continue paginating if boundary not found yet
-                if (new_content_mode and latest_id and not latest_id_found):
-                    pass
-                elif (backfill_mode and last_id and not last_id_found):
-                    pass
-                elif new_content_mode and not latest_id and not aweme_list:
-                    pass
-                else:
-                    break
 
             aweme_list.extend(page_items)
-
             self.downloader._progress_update_step("拉取作品列表", f"已抓取 {len(aweme_list)} 条")
 
             has_more = bool(page.get("has_more", False))
@@ -109,23 +74,9 @@ class PostUserModeStrategy(BaseUserModeStrategy):
                 pagination_restricted = True
                 break
 
-            # Apply number_limit after we've found the boundary (or if no boundary needed)
-            can_limit = (
-                (new_content_mode and (not latest_id or latest_id_found)) or
-                (backfill_mode and last_id_found)
-            )
-            if number_limit > 0 and can_limit:
-                if media_filter_enabled:
-                    if len(self._filter_by_media_type(aweme_list)) >= number_limit:
-                        break
-                elif len(aweme_list) >= number_limit:
-                    aweme_list = aweme_list[:number_limit]
-                    break
-
-            # Stop paginating once boundary is found in any mode
-            if new_content_mode and latest_id_found:
-                break
-            if backfill_mode and last_id_found:
+            need_latest = bool(latest_video_id) and not latest_id_found
+            need_last = bool(last_video_id) and not last_id_found
+            if not need_latest and not need_last:
                 break
 
         if pagination_restricted:
@@ -137,16 +88,110 @@ class PostUserModeStrategy(BaseUserModeStrategy):
                     "请稍后重试或尝试重新登录抖音刷新 Cookie"
                 )
 
-        # Determine suggested update field/value
-        self._suggested_update_field = ""
-        self._suggested_update_value = ""
-        if aweme_list:
-            first_id = str(aweme_list[0].get("aweme_id") or "").strip()
-            if backfill_mode and last_id_found:
-                self._suggested_update_field = "last_id"
-                self._suggested_update_value = first_id
-            elif new_content_mode:
-                self._suggested_update_field = "latest_id"
-                self._suggested_update_value = first_id
+        # ── Find boundary positions in the flat list ──
+        latest_pos = -1
+        last_pos = -1
+        for i, item in enumerate(aweme_list):
+            item_id = str(item.get("aweme_id") or "").strip()
+            if latest_pos == -1 and latest_video_id and item_id == latest_video_id:
+                latest_pos = i
+            if last_pos == -1 and last_video_id and item_id == last_video_id:
+                last_pos = i
 
+        # ── Slice by boundaries ──
+        result: List[Dict[str, Any]] = []
+
+        # Items NEWER than latest_video_id (before it in the list)
+        if latest_pos > 0:
+            print('latest_pos:', latest_pos)
+            new_items = aweme_list[:latest_pos]
+            new_items.reverse()
+            result.extend(new_items)
+
+        # Items OLDER than last_video_id (after it in the list)
+        if last_pos != -1 and last_pos < len(aweme_list) - 1:
+            print('last_pos:', last_pos)
+            old_items = aweme_list[last_pos + 1:]
+            result.extend(old_items)
+
+        if number_limit > 0:
+            result = result[:number_limit]
+
+        print('collect_items result \n')
+        for item in result:
+            logger.debug(
+                "Item %s: id=%s, title=%s, date=%s",
+                self.mode_name,
+                item.get("aweme_id"),
+                (item.get("desc") or "no_title")[:40],
+                item.get("create_time"),
+            )
+        return result
+
+    async def _collect_first_run(
+        self, sec_uid: str, user_info: Dict[str, Any], number_limit: int
+    ) -> List[Dict[str, Any]]:
+        fetcher = getattr(self.downloader.api_client, self.api_method_name, None)
+        aweme_list: List[Dict[str, Any]] = []
+        max_cursor = 0
+        has_more = True
+        pagination_restricted = False
+
+        self.downloader._progress_update_step("拉取作品列表", "分页抓取中")
+
+        while has_more:
+            await self.downloader.rate_limiter.acquire()
+            request_cursor = max_cursor
+            page_data = await fetcher(sec_uid, request_cursor, 20)
+            page = self._normalize_page_data(page_data)
+            page_items = self.select_items(page)
+            page_items = self._filter_pinned_items(page_items)
+
+            if not page_items:
+                if page.get("status_code") == 0:
+                    pagination_restricted = True
+                    logger.warning(
+                        "User post page empty at cursor=%s (status_code=0); "
+                        "will attempt browser fallback",
+                        request_cursor,
+                    )
+                break
+
+            aweme_list.extend(page_items)
+            self.downloader._progress_update_step("拉取作品列表", f"已抓取 {len(aweme_list)} 条")
+
+            has_more = bool(page.get("has_more", False))
+            max_cursor = int(page.get("max_cursor", 0) or 0)
+            if has_more and max_cursor == request_cursor:
+                logger.warning(
+                    "max_cursor did not advance (%s), stop paging to avoid loop",
+                    max_cursor,
+                )
+                pagination_restricted = True
+                break
+
+            if number_limit > 0 and len(aweme_list) >= number_limit:
+                break
+
+        if pagination_restricted:
+            self.downloader._progress_update_step("拉取作品列表", "分页受限，尝试浏览器回补")
+            await self.downloader._recover_user_post_with_browser(sec_uid, user_info, aweme_list)
+            if not aweme_list:
+                raise RuntimeError(
+                    "抖音接口未返回作品列表（可能触发了反爬限制），"
+                    "请稍后重试或尝试重新登录抖音刷新 Cookie"
+                )
+
+        if number_limit > 0:
+            aweme_list = aweme_list[:number_limit]
+
+        print('_collect_first_run result \n')
+        for item in aweme_list:
+            logger.debug(
+                "Item %s: id=%s, title=%s, date=%s",
+                self.mode_name,
+                item.get("aweme_id"),
+                (item.get("desc") or "no_title")[:40],
+                item.get("create_time"),
+            )
         return aweme_list
