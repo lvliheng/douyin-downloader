@@ -101,18 +101,60 @@ class PostUserModeStrategy(BaseUserModeStrategy):
         # ── Slice by boundaries ──
         result: List[Dict[str, Any]] = []
 
+        # 锚点判定：配置了但整个作品列表里没找到，视为该视频已删除/不可见。
+        # 仅在完整翻页（未被反爬截断）后才可信，否则会给下游造成误报。
+        latest_missing = bool(latest_video_id) and latest_pos == -1
+        last_missing = bool(last_video_id) and last_pos == -1
+        if latest_missing or last_missing:
+            logger.warning(
+                "Anchor not found: latest_missing=%s last_missing=%s",
+                latest_missing,
+                last_missing,
+            )
+        if not pagination_restricted:
+            if latest_missing:
+                print(
+                    f"[anchor] latest_video_id={latest_video_id} missing "
+                    f"head={str((aweme_list[0].get('aweme_id') if aweme_list else '') or '')}"
+                )
+            if last_missing:
+                print(
+                    f"[anchor] last_video_id={last_video_id} missing "
+                    f"tail={str((aweme_list[-1].get('aweme_id') if aweme_list else '') or '')}"
+                )
+
         # Items NEWER than latest_video_id (before it in the list)
         if latest_pos > 0:
             print('latest_pos:', latest_pos)
             new_items = aweme_list[:latest_pos]
             new_items.reverse()
             result.extend(new_items)
+        elif latest_missing:
+            # latest 锚点已失效：回退到 last 锚点为止的整段较新作品。
+            # 若 last 也失效，则回退整份列表，交给 number_limit 限制单次拉取量。
+            if last_pos > 0:
+                new_items = aweme_list[:last_pos]
+                new_items.reverse()
+                result.extend(new_items)
+            else:
+                new_items = list(aweme_list)
+                new_items.reverse()
+                result.extend(new_items)
 
         # Items OLDER than last_video_id (after it in the list)
         if last_pos != -1 and last_pos < len(aweme_list) - 1:
             print('last_pos:', last_pos)
             old_items = aweme_list[last_pos + 1:]
             result.extend(old_items)
+        elif last_missing and not (latest_missing and last_pos == -1):
+            # last 锚点已失效：回退到 latest 锚点之后的整段较老作品。
+            if latest_pos != -1 and latest_pos < len(aweme_list) - 1:
+                old_items = aweme_list[latest_pos + 1:]
+                result.extend(old_items)
+            elif latest_pos == -1:
+                old_items = list(aweme_list)
+                old_items.reverse()
+                result.extend(old_items)
 
         if number_limit > 0:
             result = result[:number_limit]
